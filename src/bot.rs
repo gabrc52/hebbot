@@ -11,8 +11,8 @@ use matrix_sdk::ruma::events::room::message::{
 use matrix_sdk::ruma::events::room::redaction::SyncRoomRedactionEvent;
 use matrix_sdk::ruma::events::room::MediaSource;
 use matrix_sdk::ruma::events::AnyTimelineEvent;
-use matrix_sdk::ruma::{EventId, OwnedMxcUri, RoomId, ServerName, UserId};
-use matrix_sdk::Client;
+use matrix_sdk::ruma::{EventId, OwnedMxcUri, RoomId, ServerName, UserId, device_id};
+use matrix_sdk::{Client, Session};
 use regex::Regex;
 
 use std::env;
@@ -39,7 +39,9 @@ impl Bot {
         let news_store = Arc::new(Mutex::new(NewsStore::read()));
 
         let username = config.bot_user_id.as_str();
-        let password = env::var("BOT_PASSWORD").expect("BOT_PASSWORD env variable not specified");
+        // TODO: support both password and access token login methods
+        let access_token = env::var("MATRIX_TOKEN").expect("MATRIX_TOKEN env variable not specified");
+        let device_id = env::var("MATRIX_DEVICE_ID").expect("MATRIX_DEVICE_ID env variable not specified");
 
         let user = UserId::parse(username).expect("Unable to parse bot user id");
         let server_name = ServerName::parse(user.server_name()).unwrap();
@@ -51,7 +53,7 @@ impl Bot {
             .await
             .unwrap();
 
-        Self::login(&client, user.localpart(), &password).await;
+        Self::login(&client, &user, &access_token, &device_id).await;
 
         // Get matrix rooms IDs
         let reporting_room_id = RoomId::parse(config.reporting_room_id.as_str()).unwrap();
@@ -124,14 +126,17 @@ impl Bot {
     }
 
     /// Login
-    async fn login(client: &Client, user: &str, pwd: &str) {
+    async fn login(client: &Client, user: &UserId, token: &str, device: &str) {
         info!("Logging in…");
-        let response = client
-            .login_username(user, pwd)
-            .initial_device_display_name("hebbot")
-            .send()
-            .await
-            .expect("Unable to login");
+
+        let session = Session {
+            access_token: token.to_string(),
+            refresh_token: None,
+            user_id: user.to_owned(),
+            device_id: device_id!(device).to_owned(),
+        };
+
+        let _ = client.restore_login(session).await;
 
         info!("Doing the initial sync…");
         client
@@ -139,10 +144,9 @@ impl Bot {
             .await
             .expect("Unable to sync");
 
-        info!(
-            "Logged in as {}, got device_id {}",
-            response.user_id, response.device_id
-        );
+
+        let response = client.whoami().await.expect("Unable to get whoami");
+        info!("Logged in as {}", response.user_id);
     }
 
     /// Simplified method for sending a matrix text/html message
